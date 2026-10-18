@@ -2,10 +2,23 @@
 #ifndef __PROCESS_UTILS_H
 #define __PROCESS_UTILS_H
 
+#include <stdint.h>
 #include <string.h>
 #include <sys/types.h>
 
 #include "process.h"
+/* File-open events carry the kernel's internal dev_t encoding (12:20).
+ * glibc major()/minor() expect the userspace encoding and give wrong values. */
+static inline unsigned int process_kernel_dev_major(uint32_t dev)
+{
+	return dev >> 20;
+}
+
+static inline unsigned int process_kernel_dev_minor(uint32_t dev)
+{
+	return dev & ((1u << 20) - 1);
+}
+
 /*
  * postprocess_full_command - Convert raw argv bytes to a readable command string.
  *
