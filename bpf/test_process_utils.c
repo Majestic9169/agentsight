@@ -54,6 +54,20 @@ static void test_postprocess_full_command_rejects_oversized_arg_len(void)
 		    "postprocess_full_command ignores oversized arg_len");
 }
 
+static void test_kernel_dev_encoding(void)
+{
+	/* Kernel dev_t packs major in 12 high bits and minor in 20 low bits. */
+	test_assert(process_kernel_dev_major(0x10300001u) == 259 &&
+		    process_kernel_dev_minor(0x10300001u) == 1,
+		    "NVMe block device: 259:1");
+	test_assert(process_kernel_dev_major(1149u) == 0 &&
+		    process_kernel_dev_minor(1149u) == 1149,
+		    "Pseudo filesystem: 0:1149");
+	test_assert(process_kernel_dev_major(0xffffffffu) == 4095 &&
+		    process_kernel_dev_minor(0xffffffffu) == 1048575,
+		    "Maximal kernel dev_t: 4095:1048575");
+}
+
 static void print_test_summary(void)
 {
 	printf("\n" YELLOW "===== Test Summary =====" RESET "\n");
@@ -74,6 +88,7 @@ int main(void)
 	test_postprocess_full_command_with_arg_len();
 	test_postprocess_full_command_without_arg_len();
 	test_postprocess_full_command_rejects_oversized_arg_len();
+	test_kernel_dev_encoding();
 
 	print_test_summary();
 
