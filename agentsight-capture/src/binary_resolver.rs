@@ -730,9 +730,8 @@ fn value_as_u32(value: &serde_json::Value) -> Option<u32> {
 /// Breadth-first search the descendant process tree rooted at `root_pid` for a
 /// concrete SSL attach path.
 ///
-/// Children are read from `/proc/<pid>/task/<pid>/children`, which lists the
-/// immediate child PIDs of a process. Requires permission to read those entries
-/// (root in practice for containerized processes).
+/// Children are collected from each thread's `/proc/<pid>/task/*/children`,
+/// so processes forked by worker threads are also discoverable.
 fn find_ssl_target_in_tree(root_pid: u32) -> Option<String> {
     let mut queue = std::collections::VecDeque::from([root_pid]);
     let mut seen = std::collections::HashSet::new();
@@ -747,17 +746,31 @@ fn find_ssl_target_in_tree(root_pid: u32) -> Option<String> {
         if let Some(path) = find_loaded_ssl_library(pid) {
             return Some(path);
         }
-        let children_path = format!("/proc/{}/task/{}/children", pid, pid);
-        if let Ok(children) = std::fs::read_to_string(&children_path) {
-            for child in children
-                .split_whitespace()
-                .filter_map(|s| s.parse::<u32>().ok())
-            {
-                queue.push_back(child);
-            }
-        }
+        queue.extend(process_child_pids(std::path::Path::new("/proc"), pid));
     }
     None
+}
+
+// Preserve main-thread-first traversal before other task IDs.
+fn process_child_pids(proc_root: &std::path::Path, pid: u32) -> Vec<u32> {
+    let task_dir = proc_root.join(pid.to_string()).join("task");
+    let mut tids = vec![pid];
+    if let Ok(tasks) = std::fs::read_dir(&task_dir) {
+        let mut workers = tasks
+            .filter_map(Result::ok)
+            .filter_map(|task| task.file_name().to_string_lossy().parse::<u32>().ok())
+            .filter(|&tid| tid != pid)
+            .collect::<Vec<_>>();
+        workers.sort_unstable();
+        tids.extend(workers);
+    }
+    let mut children = Vec::new();
+    for tid in tids {
+        if let Ok(text) = std::fs::read_to_string(task_dir.join(tid.to_string()).join("children")) {
+            children.extend(text.split_whitespace().filter_map(|s| s.parse::<u32>().ok()));
+        }
+    }
+    children
 }
 
 fn find_loaded_ssl_library(pid: u32) -> Option<String> {
@@ -785,6 +798,25 @@ fn canonicalize_attach_path(path: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn collects_children_from_worker_threads() {
+        let root = std::env::temp_dir().join(format!(
+            "agentsight-child-pids-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let tasks = root.join("42/task");
+        for tid in [42, 43, 44] {
+            std::fs::create_dir_all(tasks.join(tid.to_string())).unwrap();
+        }
+        std::fs::write(tasks.join("42/children"), "100").unwrap();
+        std::fs::write(tasks.join("43/children"), "101 102").unwrap();
+        std::fs::write(tasks.join("44/children"), "103").unwrap();
+        let found = process_child_pids(&root, 42);
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(found, vec![100, 101, 102, 103]);
+    }
 
     #[test]
     fn parses_docker_double_slash_scheme() {
