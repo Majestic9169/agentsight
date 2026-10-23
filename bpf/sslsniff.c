@@ -450,7 +450,9 @@ static int attach_codex_rustls(struct sslsniff_bpf *skel, const char *binary,
 {
 	for (size_t i = 0; i < offsets->count; i++) {
 		LIBBPF_OPTS(bpf_uprobe_opts, opts, .retprobe = false);
-		struct bpf_program *program = offsets->entries[i].vectored
+		struct bpf_program *program = offsets->entries[i].plaintext
+			? skel->progs.probe_rustls_buffer_plaintext
+			: offsets->entries[i].vectored
 			? skel->progs.probe_rustls_write_vectored
 			: skel->progs.probe_rustls_write;
 		struct bpf_link *link = bpf_program__attach_uprobe_opts(
@@ -498,17 +500,34 @@ static int attach_grok_rustls(struct sslsniff_bpf *skel, const char *binary,
 static int attach_codex_ssl(struct sslsniff_bpf *skel, const char *binary)
 {
 	struct codex_rustls_offsets write_offsets = {};
+	struct codex_rustls_offsets funnel_offsets = {};
 	size_t plaintext_offset = 0;
 	bool have_write = codex_find_rustls_offsets(binary, &write_offsets);
 	bool have_plain =
 		codex_find_rustls_buffer_plaintext_offset(binary, &plaintext_offset);
+	bool have_funnels = !have_plain
+		&& codex_find_rustls_buffer_plaintext_v2_offsets(binary,
+								 &funnel_offsets);
 	int err = 0;
 
-	if (!have_write && !have_plain) {
+	if (!have_write && !have_plain && !have_funnels) {
 		warn("Failed to attach to %s: Codex/rustls plaintext write "
 		     "signatures were not recognized\n",
 		     binary);
 		return -ENOENT;
+	}
+	if (have_funnels) {
+		fprintf(stderr,
+			"Codex/rustls buffer_plaintext copies detected in %s. "
+			"Attaching %zu offsets...\n",
+			binary, funnel_offsets.count);
+		err = attach_codex_rustls(skel, binary, &funnel_offsets);
+		if (!err)
+			return 0;
+		warn("buffer_plaintext attach failed for %s (%d)%s\n", binary,
+		     err, have_write ? "; falling back to write hooks" : "");
+		if (!have_write)
+			return err;
 	}
 	/* Prefer the shared buffer_plaintext funnel. write() is often inlined
 	 * into it, and write_vectored also calls it — attaching both would
