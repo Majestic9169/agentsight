@@ -306,12 +306,44 @@ static struct boringssl_offsets find_boringssl_offsets(const char *binary_path) 
 		size_t wr_off = find_pattern(data + search_start,
 									 search_end - search_start,
 									 write_pat, sizeof(write_pat));
-		if (wr_off == (size_t)-1) {
-			if (verbose)
-				fprintf(stderr, "BoringSSL: SSL_write pattern not found near SSL_read\n");
-			goto out;
+		if (wr_off != (size_t)-1) {
+			result.ssl_write = search_start + wr_off;
+		} else {
+			/* LTO'd Bun builds (e.g. opencode) can place SSL_write
+			 * hundreds of KiB away from SSL_read, and the prologue alone
+			 * also matches several unrelated functions. Like SSL_read,
+			 * the real SSL_write tests ssl->quic_method ([rdi+0x98])
+			 * right after its prologue; require that to pick it. */
+			static const unsigned char quic_check[] = {
+				0x48, 0x83, 0xbb, 0x98, 0x00, 0x00, 0x00, 0x00
+			};
+			size_t from = 0;
+
+			while (from < file_size) {
+				size_t rel = find_pattern(data + from, file_size - from,
+										  write_pat, sizeof(write_pat));
+				size_t off, tail_start, tail_len;
+
+				if (rel == (size_t)-1)
+					break;
+				off = from + rel;
+				from = off + 1;
+				tail_start = off + sizeof(write_pat);
+				tail_len = 0x40;
+				if (tail_start + tail_len > file_size)
+					continue;
+				if (find_pattern(data + tail_start, tail_len, quic_check,
+								 sizeof(quic_check)) != (size_t)-1) {
+					result.ssl_write = off;
+					break;
+				}
+			}
+			if (result.ssl_write == 0) {
+				if (verbose)
+					fprintf(stderr, "BoringSSL: SSL_write pattern not found\n");
+				goto out;
+			}
 		}
-		result.ssl_write = search_start + wr_off;
 	}
 
 	result.found = true;
