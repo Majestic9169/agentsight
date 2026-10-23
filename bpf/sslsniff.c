@@ -522,8 +522,13 @@ static int attach_codex_ssl(struct sslsniff_bpf *skel, const char *binary)
 			"Attaching %zu offsets...\n",
 			binary, funnel_offsets.count);
 		err = attach_codex_rustls(skel, binary, &funnel_offsets);
-		if (!err)
+		if (!err) {
+			fprintf(stderr,
+				"Attached Codex/rustls buffer_plaintext copies "
+				"(%zu offsets) for %s\n",
+				funnel_offsets.count, binary);
 			return 0;
+		}
 		warn("buffer_plaintext attach failed for %s (%d)%s\n", binary,
 		     err, have_write ? "; falling back to write hooks" : "");
 		if (!have_write)
